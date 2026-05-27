@@ -192,7 +192,16 @@ def parse_all(batch_map: dict[str, int] | None = None) -> list[dict]:
 # ── Run ───────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
-    chunks = parse_all()
+    # ── Add new batches here as you collect more PDFs ──────────────────────
+    # Key   = exact filename as it appears in data/raw/
+    # Value = batch number
+    BATCH_MAP = {
+        "Company_Level_-_Internship_Interview_Experiences_Batch_10_.pdf": 10,
+        "Company_Level_-_Internship_Interview_Experiences_Batch_9_.pdf":   9,
+        # "Company_Level_-_Internship_Interview_Experiences_Batch_11_.pdf": 11,  ← add future batches here
+    }
+
+    chunks = parse_all(batch_map=BATCH_MAP)
 
     if not chunks:
         sys.exit(1)
