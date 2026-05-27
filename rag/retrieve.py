@@ -52,24 +52,31 @@ def retrieve(
         List of result dicts with keys: document, company, batch, topics, distance
     """
     # Build the metadata filter (ChromaDB "where" clause)
-    # RAG insight: "where" filters are AND-ed together.
-    # If you filter too narrowly you may get 0 results — start broad.
-    where = {}
+    # Rules:
+    #   - Empty dict       → pass None  (ChromaDB rejects {})
+    #   - Single filter    → {"key": value}
+    #   - Multiple filters → {"$and": [{k:v}, {k:v}, ...]}
+    filters = {}
     if company:
-        where["company"] = company.upper()
+        filters["company"] = company.upper()
     if batch:
-        where["batch"] = batch
-
-    # Topic is stored as a comma-separated string; use $contains for substring match
+        filters["batch"] = batch
     if topic_filter:
-        where["topics"] = {"$contains": topic_filter}
+        filters["topics"] = {"$contains": topic_filter}
+
+    if len(filters) == 0:
+        where_clause = None
+    elif len(filters) == 1:
+        where_clause = filters
+    else:
+        where_clause = {"$and": [{k: v} for k, v in filters.items()]}
 
     query_embedding = model.encode(query).tolist()
 
     results = collection.query(
         query_embeddings=[query_embedding],
         n_results=min(top_k, collection.count()),
-        where=where if where else None,
+        where=where_clause,
         include=["documents", "metadatas", "distances"],
     )
 
@@ -86,7 +93,7 @@ def retrieve(
             "batch":      meta["batch"],
             "topics":     meta["topics"].split(",") if meta["topics"] else [],
             "num_rounds": meta.get("num_rounds", 0),
-            "similarity": round(1 - dist, 3),  # cosine distance → similarity score
+            "similarity": round(1 - dist, 3),
         })
 
     return chunks
