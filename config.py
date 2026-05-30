@@ -1,38 +1,50 @@
 """
 config.py — central settings for the entire project.
-Change values here; nothing else needs to be edited for basic setup.
 """
 
 import os
+import re
 from pathlib import Path
 
-# ── Paths ────────────────────────────────────────────────────────────────────
-BASE_DIR    = Path(__file__).parent
-DATA_DIR    = BASE_DIR / "data" / "raw"        # drop PDFs here
-CHROMA_DIR  = BASE_DIR / "data" / "chroma_db"  # vector store lives here
+# ── Paths ─────────────────────────────────────────────────────────────────────
+BASE_DIR   = Path(__file__).parent
+DATA_DIR   = BASE_DIR / "data" / "raw"
+CHROMA_DIR = BASE_DIR / "data" / "chroma_db"
 
 # ── Embedding model ───────────────────────────────────────────────────────────
-# Free, runs locally, no API key needed.
-# Swap to "all-mpnet-base-v2" for higher quality (slower).
 EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 
 # ── ChromaDB ──────────────────────────────────────────────────────────────────
 CHROMA_COLLECTION = "interview_chunks"
 
-# ── LLM (Anthropic Claude) ────────────────────────────────────────────────────
-# Set your key as env variable: export ANTHROPIC_API_KEY=sk-...
-# Or paste directly here (not recommended for shared code).
-GROQ_API_KEY  = os.getenv("GROQ_API_KEY", "")
-LLM_MODEL     = "llama-3.1-8b-instant"   # free, very fast on Groq
-LLM_MAX_TOKENS = 1500
+# ── LLM ───────────────────────────────────────────────────────────────────────
+GROQ_API_KEY   = os.getenv("GROQ_API_KEY", "")
+LLM_MODEL      = "llama-3.1-8b-instant"
+LLM_MAX_TOKENS = 2000
 
 # ── Retrieval ─────────────────────────────────────────────────────────────────
-# How many chunks to fetch per query before aggregation
-TOP_K = 15
+TOP_K             = 30   # fetch more, re-rank by recency after
+RECENCY_BONUS     = 0.05 # score boost per batch above batch 1 (e.g. batch 9 → +0.40)
+RECENT_BATCH_PREF = 2    # extra weight multiplier for last N batches
+
+# ── Batch number extraction ───────────────────────────────────────────────────
+def extract_batch_from_filename(filename: str) -> int:
+    """
+    Auto-detects batch number from PDF filename.
+    Works for patterns like:
+      Batch_10_, batch10, Batch 9, _B9_, etc.
+    Falls back to 1 if not found.
+    """
+    m = re.search(r'[Bb]atch[\s_\-]*(\d+)', filename)
+    if m:
+        return int(m.group(1))
+    # fallback: any standalone number in filename
+    nums = re.findall(r'\d+', filename)
+    if nums:
+        return int(nums[0])
+    return 1
 
 # ── Topic taxonomy ────────────────────────────────────────────────────────────
-# Maps a canonical tag → keywords that trigger it during parsing.
-# Add more tags/keywords as you collect more docs.
 TOPIC_MAP = {
     "linear_regression":  ["linear regression", "multicollinearity", "vif", "r square",
                             "adj r2", "adjusted r", "lasso", "ridge", "regularization",
@@ -49,7 +61,8 @@ TOPIC_MAP = {
                             "seasonality", "cointegration", "mean reverting", "pairs trading"],
     "statistics":         ["hypothesis testing", "p-value", "t-test", "chi square", "anova",
                             "central limit theorem", "clt", "confidence interval",
-                            "normality", "shapiro", "kolmogorov", "a/b testing"],
+                            "normality", "shapiro", "kolmogorov", "a/b testing",
+                            "type 1", "type 2", "proportion test"],
     "dimensionality":     ["pca", "svd", "eigenvalue", "eigenvector", "dimensionality reduction",
                             "feature selection", "variance explained"],
     "clustering":         ["clustering", "k-means", "kmeans", "dbscan", "hierarchical",
@@ -73,9 +86,34 @@ TOPIC_MAP = {
                             "market segmentation", "churn", "pricing", "demand forecast"],
 }
 
-# ── Companies list (used by parser to detect section headers) ─────────────────
+# ── Companies ─────────────────────────────────────────────────────────────────
+# Add new companies here as you collect more batch docs
 COMPANIES = [
     "QRT", "DE SHAW", "SUN PHARMA", "JPMC", "MASTER CARD", "SWIGGY",
     "PNG", "KENVUE", "BCG", "POLYCAB", "PIRAMAL FINANCE", "OLIVER WYMAN",
-    "RENEW", "AUXO AI", "DECISION POINT", "L & T FINANCE", "DECIMAL POINT", "JSW"
+    "RENEW", "AUXO AI", "DECISION POINT", "L & T FINANCE", "DECIMAL POINT", "JSW",
+    "AMAZON", "GOOGLE", "MICROSOFT", "FLIPKART", "MEESHO", "WALMART",
+    "DELOITTE", "MCKINSEY", "BAIN", "EY", "KPMG", "PWC",
 ]
+
+# ── Company name aliases ──────────────────────────────────────────────────────
+# Maps messy variants found in docs → canonical name
+COMPANY_ALIASES = {
+    "D E SHAW":              "DE SHAW",
+    "D.E.SHAW":              "DE SHAW",
+    "D.E. SHAW":             "DE SHAW",
+    "DE SHAW & CO":          "DE SHAW",
+    "MASTERCARD AI GARAGE":  "MASTER CARD",
+    "MASTERCARD":            "MASTER CARD",
+    "MASTER CARD AI":        "MASTER CARD",
+    "P&G":                   "PNG",
+    "PROCTER & GAMBLE":      "PNG",
+    "PROCTER AND GAMBLE":    "PNG",
+    "PIRAMAL HOUSING FINANCE": "PIRAMAL FINANCE",
+    "PLAY GAMES 24*7 PVT LTD": "GAMES24X7",
+    "PLAYGAMES":             "GAMES24X7",
+    "L&T FINANCE":           "L & T FINANCE",
+    "LT FINANCE":            "L & T FINANCE",
+    "OLIVER WYMAN":          "OLIVER WYMAN",
+    "RENEW POWER":           "RENEW",
+}

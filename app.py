@@ -16,11 +16,11 @@ from config import DATA_DIR, CHROMA_DIR, ANTHROPIC_API_KEY
 def check_setup():
     errors = []
 
-    # if not ANTHROPIC_API_KEY:
-    #     errors.append(
-    #         "ANTHROPIC_API_KEY is not set.\n"
-    #         "  Export it:  export ANTHROPIC_API_KEY=sk-ant-..."
-    #     )
+    if not ANTHROPIC_API_KEY:
+        errors.append(
+            "ANTHROPIC_API_KEY is not set.\n"
+            "  Export it:  export ANTHROPIC_API_KEY=sk-ant-..."
+        )
 
     parsed = DATA_DIR / "parsed_chunks.json"
     if not parsed.exists():

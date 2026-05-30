@@ -1,19 +1,18 @@
 """
 rag/retrieve.py
 ---------------
-Retrieves relevant chunks from ChromaDB given a query + optional filters.
+Retrieval with recency-weighted re-ranking.
 
-RAG concept learned here:
-  - Semantic search finds chunks that are *meaningfully similar*, not just keyword matches.
-  - Metadata filters pre-narrow the search space before similarity is computed.
-  - Order matters: filter first, then search → faster and more relevant results.
+After semantic search, each chunk's similarity score is boosted
+based on how recent the batch is. This ensures recent batches
+surface higher without completely suppressing older ones.
 """
 
 import sys
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent.parent))
-from config import CHROMA_DIR, CHROMA_COLLECTION, EMBEDDING_MODEL, TOP_K
+from config import CHROMA_DIR, CHROMA_COLLECTION, EMBEDDING_MODEL, TOP_K, RECENCY_BONUS
 
 
 def get_collection():
@@ -27,35 +26,8 @@ def get_embedding_model():
     return SentenceTransformer(EMBEDDING_MODEL)
 
 
-def retrieve(
-    query: str,
-    model,
-    collection,
-    company: str | None = None,
-    batch: int | None = None,
-    topic_filter: str | None = None,
-    top_k: int = TOP_K,
-) -> list[dict]:
-    """
-    Semantic search with optional metadata pre-filters.
-
-    Args:
-        query        : natural language query
-        model        : SentenceTransformer instance
-        collection   : ChromaDB collection
-        company      : filter to a specific company (e.g. "BCG")
-        batch        : filter to a specific batch (e.g. 10)
-        topic_filter : filter to chunks containing this topic tag
-        top_k        : how many chunks to return
-
-    Returns:
-        List of result dicts with keys: document, company, batch, topics, distance
-    """
-    # Build the metadata filter (ChromaDB "where" clause)
-    # Rules:
-    #   - Empty dict       → pass None  (ChromaDB rejects {})
-    #   - Single filter    → {"key": value}
-    #   - Multiple filters → {"$and": [{k:v}, {k:v}, ...]}
+def _build_where(company=None, batch=None, topic_filter=None):
+    """Build ChromaDB where clause safely — never passes empty dict."""
     filters = {}
     if company:
         filters["company"] = company.upper()
@@ -65,55 +37,96 @@ def retrieve(
         filters["topics"] = {"$contains": topic_filter}
 
     if len(filters) == 0:
-        where_clause = None
-    elif len(filters) == 1:
-        where_clause = filters
-    else:
-        where_clause = {"$and": [{k: v} for k, v in filters.items()]}
+        return None
+    if len(filters) == 1:
+        return filters
+    return {"$and": [{k: v} for k, v in filters.items()]}
 
+
+def _recency_score(batch: int, max_batch: int) -> float:
+    """
+    Recency bonus: chunks from the most recent batch get the highest boost.
+    batch 10 with max_batch=10 → bonus = RECENCY_BONUS * 10
+    batch 3  with max_batch=10 → bonus = RECENCY_BONUS * 3
+    """
+    return RECENCY_BONUS * batch
+
+
+def retrieve(
+    query: str,
+    model,
+    collection,
+    company: str | None = None,
+    batch: int | None = None,
+    topic_filter: str | None = None,
+    top_k: int = TOP_K,
+    recency_weight: bool = True,
+) -> list[dict]:
+    """
+    Semantic search + recency re-ranking.
+    Fetches 2x top_k from ChromaDB, re-ranks by (similarity + recency bonus),
+    returns top_k after re-ranking.
+    """
+    where_clause    = _build_where(company, batch, topic_filter)
     query_embedding = model.encode(query).tolist()
+
+    fetch_k = min(top_k * 2, collection.count())
 
     results = collection.query(
         query_embeddings=[query_embedding],
-        n_results=min(top_k, collection.count()),
+        n_results=fetch_k,
         where=where_clause,
         include=["documents", "metadatas", "distances"],
     )
 
-    # Flatten into a clean list of dicts
+    # Get max batch in this result set for normalisation
+    all_batches = [m["batch"] for m in results["metadatas"][0]]
+    max_batch   = max(all_batches) if all_batches else 1
+
     chunks = []
     for doc, meta, dist in zip(
         results["documents"][0],
         results["metadatas"][0],
         results["distances"][0],
     ):
+        base_sim = round(1 - dist, 4)
+        bonus    = _recency_score(meta["batch"], max_batch) if recency_weight else 0
         chunks.append({
-            "document":   doc,
-            "company":    meta["company"],
-            "batch":      meta["batch"],
-            "topics":     meta["topics"].split(",") if meta["topics"] else [],
-            "num_rounds": meta.get("num_rounds", 0),
-            "similarity": round(1 - dist, 3),
+            "document":      doc,
+            "company":       meta["company"],
+            "batch":         meta["batch"],
+            "topics":        meta["topics"].split(",") if meta["topics"] else [],
+            "num_rounds":    meta.get("num_rounds", 0),
+            "base_sim":      base_sim,
+            "recency_bonus": round(bonus, 3),
+            "final_score":   round(base_sim + bonus, 4),
         })
 
-    return chunks
+    # Re-rank by final_score (similarity + recency)
+    chunks.sort(key=lambda x: x["final_score"], reverse=True)
+    return chunks[:top_k]
 
 
-def retrieve_for_topic(
-    topic: str,
-    model,
-    collection,
-    company: str | None = None,
-    top_k: int = 8,
-) -> list[dict]:
-    """
-    Used for book-index mode: search for a single specific topic.
-    Returns results sorted by similarity.
-    """
+def retrieve_for_topic(topic, model, collection, company=None, top_k=10):
     return retrieve(
         query=topic,
         model=model,
         collection=collection,
         company=company,
         top_k=top_k,
+        recency_weight=True,
     )
+
+
+def retrieve_multi_company(query, model, collection, companies, top_k_per_company=8):
+    """
+    For comparison queries — fetch separately per company so
+    each company is fairly represented regardless of data volume.
+    """
+    results = {}
+    for co in companies:
+        chunks = retrieve(query, model, collection, company=co,
+                          top_k=top_k_per_company, recency_weight=True)
+        if chunks:
+            results[co] = chunks
+    return results
